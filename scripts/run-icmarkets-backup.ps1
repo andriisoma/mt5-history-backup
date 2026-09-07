@@ -23,8 +23,9 @@ while (Test-IcBusy) {
 }
 
 Write-Log 'starting backup...'
-Set-Location $PSScriptRoot
-node src/backup.mjs `
+$repoRoot = Split-Path $PSScriptRoot -Parent
+Set-Location $repoRoot
+node (Join-Path $repoRoot 'src/backup.mjs') `
   --dest 'C:\Users\andrs\My Drive\Forex\Ticks history backup' `
   --server ICMarketsSC-MT5 `
   --terminal 010E047102812FC0C18890992854220E `
