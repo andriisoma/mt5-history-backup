@@ -1,0 +1,8 @@
+{
+  "dest": "C:\\Users\\andrs\\My Drive\\Forex\\Ticks history backup",
+  "includeDemo": false,
+  "skipTester": false,
+  "leverage": "500",
+  "terminalId": "",
+  "server": "ICMarketsSC-MT5"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "mt5-history-backup",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Backup MT5 real ticks (.tkc) and M1 history (.hcc) from local terminals to Google Drive or any folder",
+  "scripts": {
+    "backup": "node src/backup.mjs",
+    "discover": "node src/backup.mjs --discover"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

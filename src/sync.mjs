@@ -1,0 +1,168 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  copyFileWithRetry,
+  formatBytes,
+  listDirNames,
+  listFiles,
+  newestDatedFile,
+  parseYyyy,
+  parseYyyyMm,
+  safeStat,
+} from './util.mjs';
+
+const TICK_SIDECARS = new Set(['ticks.dat']);
+
+function shouldCopySidecar(name, srcStat, destStat) {
+  if (!destStat) return true;
+  if (srcStat.mtimeMs > destStat.mtimeMs) return true;
+  if (srcStat.size > destStat.size) return true;
+  return false;
+}
+
+async function syncOneFile(src, dest, action, log) {
+  const srcStat = safeStat(src);
+  if (!srcStat) return null;
+  const destStat = safeStat(dest);
+  await copyFileWithRetry(src, dest);
+  const entry = {
+    action,
+    file: path.basename(src),
+    srcBytes: srcStat.size,
+    destBytes: destStat?.size ?? 0,
+  };
+  log.push(entry);
+  console.log(
+    `    ${action.padEnd(8)} ${entry.file} (${formatBytes(srcStat.size)}${destStat ? `, was ${formatBytes(destStat.size)}` : ''})`,
+  );
+  return entry;
+}
+
+/**
+ * Sync dated files with last-file-only replace rule.
+ * @param {object} opts
+ * @param {string} opts.sourceDir
+ * @param {string} opts.destDir
+ * @param {(name:string)=>object|null} opts.parseDated
+ * @param {Set<string>} opts.sidecars
+ * @param {string} opts.kind - ticks | history
+ */
+export async function syncSymbolFolder(opts) {
+  const { sourceDir, destDir, parseDated, sidecars, kind, symbol } = opts;
+  const log = [];
+  if (!safeStat(sourceDir)?.isDirectory()) return { symbol, kind, log, skipped: true };
+
+  const srcFiles = listFiles(sourceDir);
+  const destExists = safeStat(destDir)?.isDirectory();
+  const destFiles = destExists ? listFiles(destDir) : [];
+
+  const srcDated = srcFiles.filter((f) => parseDated(f));
+  const destDated = destFiles.filter((f) => parseDated(f));
+  const srcNewest = newestDatedFile(srcDated, parseDated);
+  const destNewest = newestDatedFile(destDated, parseDated);
+
+  if (!destExists) {
+    fs.mkdirSync(destDir, { recursive: true });
+    console.log(`  ${symbol}: new folder (${srcDated.length} dated file(s))`);
+    for (const name of srcFiles) {
+      if (sidecars.has(name) || parseDated(name)) {
+        await syncOneFile(path.join(sourceDir, name), path.join(destDir, name), 'add', log);
+      }
+    }
+    return { symbol, kind, log };
+  }
+
+  const destDatedSet = new Set(destDated);
+  for (const name of srcDated) {
+    if (!destDatedSet.has(name)) {
+      await syncOneFile(path.join(sourceDir, name), path.join(destDir, name), 'add', log);
+    }
+  }
+
+  if (srcNewest && destNewest && srcNewest.name === destNewest.name) {
+    const srcPath = path.join(sourceDir, srcNewest.name);
+    const destPath = path.join(destDir, destNewest.name);
+    const srcStat = safeStat(srcPath);
+    const destStat = safeStat(destPath);
+    if (srcStat && destStat && srcStat.size > destStat.size) {
+      await syncOneFile(srcPath, destPath, 'replace', log);
+    } else if (srcStat && destStat) {
+      console.log(
+        `    skip     ${srcNewest.name} (src ${formatBytes(srcStat.size)} <= dest ${formatBytes(destStat.size)})`,
+      );
+    }
+  }
+
+  for (const name of srcFiles) {
+    if (!sidecars.has(name)) continue;
+    const srcPath = path.join(sourceDir, name);
+    const destPath = path.join(destDir, name);
+    const srcStat = safeStat(srcPath);
+    const destStat = safeStat(destPath);
+    if (srcStat && shouldCopySidecar(name, srcStat, destStat)) {
+      await syncOneFile(srcPath, destPath, destStat ? 'refresh' : 'add', log);
+    }
+  }
+
+  return { symbol, kind, log };
+}
+
+export async function syncTicksTree(sourceTicksRoot, destTicksRoot) {
+  const results = [];
+  if (!safeStat(sourceTicksRoot)?.isDirectory()) {
+    console.log(`Source ticks folder missing: ${sourceTicksRoot}`);
+    return results;
+  }
+  fs.mkdirSync(destTicksRoot, { recursive: true });
+  const symbols = listDirNames(sourceTicksRoot).filter((symbol) => {
+    const files = listFiles(path.join(sourceTicksRoot, symbol));
+    return files.some((f) => f.endsWith('.tkc') || f === 'ticks.dat');
+  });
+  console.log(`\nSync ticks (${symbols.length} symbol(s))`);
+  for (const symbol of symbols) {
+    const res = await syncSymbolFolder({
+      sourceDir: path.join(sourceTicksRoot, symbol),
+      destDir: path.join(destTicksRoot, symbol),
+      parseDated: parseYyyyMm,
+      sidecars: TICK_SIDECARS,
+      kind: 'ticks',
+      symbol,
+    });
+    if (res.log.length) results.push(res);
+  }
+  return results;
+}
+
+export async function syncHistoryTree(sourceHistoryRoot, destHistoryRoot) {
+  const results = [];
+  if (!safeStat(sourceHistoryRoot)?.isDirectory()) {
+    console.log(`Source history folder missing: ${sourceHistoryRoot}`);
+    return results;
+  }
+  fs.mkdirSync(destHistoryRoot, { recursive: true });
+  const symbols = listDirNames(sourceHistoryRoot).filter((symbol) => {
+    const files = listFiles(path.join(sourceHistoryRoot, symbol));
+    return files.some((f) => /\.(hcc|hc)$/i.test(f));
+  });
+  console.log(`\nSync history (${symbols.length} symbol(s))`);
+  for (const symbol of symbols) {
+    const res = await syncSymbolFolder({
+      sourceDir: path.join(sourceHistoryRoot, symbol),
+      destDir: path.join(destHistoryRoot, symbol),
+      parseDated: parseYyyy,
+      sidecars: new Set(),
+      kind: 'history',
+      symbol,
+    });
+    if (res.log.length) results.push(res);
+  }
+  return results;
+}
+
+export function summarizeSyncResults(tickResults, historyResults) {
+  const counts = { add: 0, replace: 0, refresh: 0 };
+  for (const group of [...tickResults, ...historyResults]) {
+    for (const e of group.log) counts[e.action] = (counts[e.action] ?? 0) + 1;
+  }
+  return counts;
+}
