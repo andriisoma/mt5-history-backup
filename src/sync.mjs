@@ -85,20 +85,30 @@ export async function syncSymbolFolder(opts) {
   }
 
   const destDatedSet = new Set(destDated);
+
   for (const name of srcDated) {
     if (!destDatedSet.has(name)) {
       await syncOneFile(path.join(sourceDir, name), path.join(destDir, name), 'add', log, errors);
     }
   }
 
-  if (srcNewest && destNewest && srcNewest.name === destNewest.name) {
-    const srcPath = path.join(sourceDir, srcNewest.name);
-    const destPath = path.join(destDir, destNewest.name);
-    const srcStat = safeStat(srcPath);
-    const destStat = safeStat(destPath);
-    if (srcStat && destStat && srcStat.size > destStat.size) {
-      await syncOneFile(srcPath, destPath, 'replace', log, errors);
-    } else if (srcStat && destStat) {
+  const undersized = destDated
+    .filter((name) => {
+      const srcStat = safeStat(path.join(sourceDir, name));
+      const destStat = safeStat(path.join(destDir, name));
+      return srcStat && destStat && srcStat.size > destStat.size;
+    })
+    .sort();
+
+  const replaceTarget = undersized.at(-1);
+  if (replaceTarget) {
+    const srcPath = path.join(sourceDir, replaceTarget);
+    const destPath = path.join(destDir, replaceTarget);
+    await syncOneFile(srcPath, destPath, 'replace', log, errors);
+  } else if (destNewest && srcNewest && destNewest.name === srcNewest.name) {
+    const srcStat = safeStat(path.join(sourceDir, srcNewest.name));
+    const destStat = safeStat(path.join(destDir, destNewest.name));
+    if (srcStat && destStat) {
       console.log(
         `    skip     ${srcNewest.name} (src ${formatBytes(srcStat.size)} <= dest ${formatBytes(destStat.size)})`,
       );
@@ -128,7 +138,7 @@ export async function syncTicksTree(sourceTicksRoot, destTicksRoot) {
   fs.mkdirSync(destTicksRoot, { recursive: true });
   const symbols = listDirNames(sourceTicksRoot).filter((symbol) => {
     const files = listFiles(path.join(sourceTicksRoot, symbol));
-    return files.some((f) => f.endsWith('.tkc') || f === 'ticks.dat');
+    return files.some((f) => f.endsWith('.tkc'));
   });
   console.log(`\nSync ticks (${symbols.length} symbol(s))`);
   for (const symbol of symbols) {

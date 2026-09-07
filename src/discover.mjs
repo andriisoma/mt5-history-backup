@@ -20,7 +20,7 @@ function scanServerData(serverPath, kind) {
     const files = listFiles(dir);
     const hasData =
       kind === 'ticks'
-        ? files.some((f) => f.endsWith('.tkc') || f === 'ticks.dat')
+        ? files.some((f) => f.endsWith('.tkc'))
         : files.some((f) => /\.(hcc|hc)$/i.test(f));
     if (!hasData) continue;
     let bytes = 0;
