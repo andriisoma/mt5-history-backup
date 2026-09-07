@@ -99,6 +99,32 @@ export function monthRangeFromNewestTkc(newestName, now = new Date()) {
   return { from, to, parsed };
 }
 
+/** Pick the month to force-complete: previous calendar month when newest tkc is the in-progress month. */
+export function monthRangeForForceComplete(newestName, now = new Date()) {
+  const parsed = parseYyyyMm(newestName);
+  if (!parsed) throw new Error(`Invalid tkc name: ${newestName}`);
+
+  let year = parsed.year;
+  let month = parsed.month;
+  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+  if (isCurrentMonth) {
+    month -= 1;
+    if (month < 1) {
+      month = 12;
+      year -= 1;
+    }
+  }
+
+  const from = `${year}.${pad2(month)}.01`;
+  const to = `${year}.${pad2(month)}.${pad2(lastDayOfMonth(year, month))}`;
+  return {
+    from,
+    to,
+    monthKey: `${year}${pad2(month)}`,
+    sourceNewest: newestName,
+  };
+}
+
 export function monthRangeFromNewestHistory(newestName, now = new Date()) {
   const parsed = parseYyyy(newestName);
   if (!parsed) throw new Error(`Invalid history name: ${newestName}`);

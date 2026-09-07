@@ -3,8 +3,8 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
+  monthRangeForForceComplete,
   monthRangeFromNewestHistory,
-  monthRangeFromNewestTkc,
   sleepMs,
 } from './util.mjs';
 import {
@@ -94,23 +94,25 @@ function testerLogPath(dataPath) {
   return path.join(dataPath, 'Tester', 'logs', `${y}${m}${d}.log`);
 }
 
-function readTesterTail(dataPath, offset) {
+function readTesterTail(dataPath, _offset, maxBytes = 512 * 1024) {
   const p = testerLogPath(dataPath);
   if (!fs.existsSync(p)) return '';
   const stat = fs.statSync(p);
-  const start = offset > 0 && offset < stat.size ? offset : Math.max(0, stat.size - 256 * 1024);
-  const len = stat.size - start;
-  const buf = Buffer.alloc(len);
   const fd = fs.openSync(p, 'r');
   try {
-    fs.readSync(fd, buf, 0, len, start);
+    const bom = Buffer.alloc(2);
+    fs.readSync(fd, bom, 0, 2, 0);
+    const isUtf16 = bom[0] === 0xff && bom[1] === 0xfe;
+    let start = Math.max(isUtf16 ? 2 : 0, stat.size - maxBytes);
+    if (isUtf16 && (start - 2) % 2 !== 0) start += 1;
+    const readLen = stat.size - start;
+    const buf = Buffer.alloc(readLen);
+    fs.readSync(fd, buf, 0, readLen, start);
+    if (isUtf16) return new TextDecoder('utf-16le').decode(buf);
+    return new TextDecoder('utf-8').decode(buf);
   } finally {
     fs.closeSync(fd);
   }
-  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
-    return new TextDecoder('utf-16le').decode(buf.subarray(2));
-  }
-  return new TextDecoder('utf-8').decode(buf);
 }
 
 export function checkOccupancy(installPath, cliPath = DEFAULT_CLI) {
@@ -174,6 +176,9 @@ async function runTesterSession(entry, symbol, { from, to, model, leverage }) {
     if (/Test passed|final balance/i.test(tail)) {
       return { ok: true, log: tail.slice(-500) };
     }
+    if (/SymbolSpecProbe: wrote/i.test(tail)) {
+      return { ok: true, log: tail.slice(-500) };
+    }
     if (new RegExp(`${symbol}.*real ticks begin`, 'i').test(tail)) {
       return { ok: true, log: tail.slice(-500) };
     }
@@ -209,8 +214,8 @@ export async function forceCompleteLastMonth(entry, symbols, options = {}) {
   for (const symbol of tickSymbols) {
     const dir = symbolTickDir(entry, symbol);
     const newest = readNewestTkc(dir);
-    const { from, to } = monthRangeFromNewestTkc(newest);
-    console.log(`  ${symbol}: ${newest} (${from} -> ${to})`);
+    const { from, to, monthKey, sourceNewest } = monthRangeForForceComplete(newest);
+    console.log(`  ${symbol}: ${sourceNewest} -> force ${monthKey} (${from} -> ${to})`);
     try {
       await runTesterSession(entry, symbol, { from, to, model: 4, leverage });
     } catch (err) {
