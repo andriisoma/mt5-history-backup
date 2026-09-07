@@ -94,8 +94,17 @@ async function backupOneEntry(entry, options) {
   const summary = summarizeSyncResults(tickResults, historyResults);
 
   console.log(
-    `\n  Sync summary: add=${summary.add ?? 0} replace=${summary.replace ?? 0} refresh=${summary.refresh ?? 0}`,
+    `\n  Sync summary: add=${summary.counts.add ?? 0} replace=${summary.counts.replace ?? 0} refresh=${summary.counts.refresh ?? 0} error=${summary.counts.error ?? 0}`,
   );
+  if (summary.errors.length) {
+    console.log('  Copy errors (retry after closing MT5 or re-run):');
+    for (const e of summary.errors.slice(0, 10)) {
+      console.log(`    ${e.kind}/${e.symbol} ${e.file}: ${e.message}`);
+    }
+    if (summary.errors.length > 10) {
+      console.log(`    ... and ${summary.errors.length - 10} more`);
+    }
+  }
 
   return {
     server: entry.server,
@@ -171,6 +180,12 @@ async function main() {
     includeDemo: opts.includeDemo,
     runs: runMeta,
   });
+
+  const copyErrors = runMeta.flatMap((r) => r.summary.errors ?? []);
+  if (copyErrors.length) {
+    console.error(`\nBackup finished with ${copyErrors.length} copy error(s). Re-run after closing MT5.`);
+    process.exit(2);
+  }
 
   const totalTick = targets.reduce((s, t) => s + t.tickBytes, 0);
   const totalHist = targets.reduce((s, t) => s + t.historyBytes, 0);

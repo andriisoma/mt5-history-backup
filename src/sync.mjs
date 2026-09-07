@@ -20,11 +20,22 @@ function shouldCopySidecar(name, srcStat, destStat) {
   return false;
 }
 
-async function syncOneFile(src, dest, action, log) {
+async function syncOneFile(src, dest, action, log, errors) {
   const srcStat = safeStat(src);
   if (!srcStat) return null;
   const destStat = safeStat(dest);
-  await copyFileWithRetry(src, dest);
+  try {
+    await copyFileWithRetry(src, dest);
+  } catch (err) {
+    const entry = {
+      action: 'error',
+      file: path.basename(src),
+      message: err.message,
+    };
+    errors.push(entry);
+    console.log(`    error    ${entry.file} (${err.message})`);
+    return entry;
+  }
   const entry = {
     action,
     file: path.basename(src),
@@ -50,7 +61,8 @@ async function syncOneFile(src, dest, action, log) {
 export async function syncSymbolFolder(opts) {
   const { sourceDir, destDir, parseDated, sidecars, kind, symbol } = opts;
   const log = [];
-  if (!safeStat(sourceDir)?.isDirectory()) return { symbol, kind, log, skipped: true };
+  const errors = [];
+  if (!safeStat(sourceDir)?.isDirectory()) return { symbol, kind, log, errors, skipped: true };
 
   const srcFiles = listFiles(sourceDir);
   const destExists = safeStat(destDir)?.isDirectory();
@@ -66,16 +78,16 @@ export async function syncSymbolFolder(opts) {
     console.log(`  ${symbol}: new folder (${srcDated.length} dated file(s))`);
     for (const name of srcFiles) {
       if (sidecars.has(name) || parseDated(name)) {
-        await syncOneFile(path.join(sourceDir, name), path.join(destDir, name), 'add', log);
+        await syncOneFile(path.join(sourceDir, name), path.join(destDir, name), 'add', log, errors);
       }
     }
-    return { symbol, kind, log };
+    return { symbol, kind, log, errors };
   }
 
   const destDatedSet = new Set(destDated);
   for (const name of srcDated) {
     if (!destDatedSet.has(name)) {
-      await syncOneFile(path.join(sourceDir, name), path.join(destDir, name), 'add', log);
+      await syncOneFile(path.join(sourceDir, name), path.join(destDir, name), 'add', log, errors);
     }
   }
 
@@ -85,7 +97,7 @@ export async function syncSymbolFolder(opts) {
     const srcStat = safeStat(srcPath);
     const destStat = safeStat(destPath);
     if (srcStat && destStat && srcStat.size > destStat.size) {
-      await syncOneFile(srcPath, destPath, 'replace', log);
+      await syncOneFile(srcPath, destPath, 'replace', log, errors);
     } else if (srcStat && destStat) {
       console.log(
         `    skip     ${srcNewest.name} (src ${formatBytes(srcStat.size)} <= dest ${formatBytes(destStat.size)})`,
@@ -100,11 +112,11 @@ export async function syncSymbolFolder(opts) {
     const srcStat = safeStat(srcPath);
     const destStat = safeStat(destPath);
     if (srcStat && shouldCopySidecar(name, srcStat, destStat)) {
-      await syncOneFile(srcPath, destPath, destStat ? 'refresh' : 'add', log);
+      await syncOneFile(srcPath, destPath, destStat ? 'refresh' : 'add', log, errors);
     }
   }
 
-  return { symbol, kind, log };
+  return { symbol, kind, log, errors };
 }
 
 export async function syncTicksTree(sourceTicksRoot, destTicksRoot) {
@@ -160,9 +172,14 @@ export async function syncHistoryTree(sourceHistoryRoot, destHistoryRoot) {
 }
 
 export function summarizeSyncResults(tickResults, historyResults) {
-  const counts = { add: 0, replace: 0, refresh: 0 };
+  const counts = { add: 0, replace: 0, refresh: 0, error: 0 };
+  const errors = [];
   for (const group of [...tickResults, ...historyResults]) {
     for (const e of group.log) counts[e.action] = (counts[e.action] ?? 0) + 1;
+    for (const e of group.errors ?? []) {
+      counts.error += 1;
+      errors.push({ symbol: group.symbol, kind: group.kind, ...e });
+    }
   }
-  return counts;
+  return { counts, errors };
 }

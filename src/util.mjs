@@ -23,7 +23,7 @@ export function safeStat(p) {
   }
 }
 
-export async function copyFileWithRetry(src, dest, { retries = 5, delayMs = 1500 } = {}) {
+export async function copyFileWithRetry(src, dest, { retries = 15, delayMs = 3000 } = {}) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   let lastErr;
   for (let i = 0; i < retries; i++) {

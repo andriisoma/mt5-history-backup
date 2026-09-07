@@ -1,6 +1,7 @@
 node_modules/
 config.json
 *.log
+test-out/
 .DS_Store
 Thumbs.db
 desktop.ini
