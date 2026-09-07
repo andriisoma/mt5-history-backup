@@ -163,9 +163,10 @@ async function runTesterSession(entry, symbol, { from, to, model, leverage }) {
   const logOffset = fs.existsSync(testerLogPath(entry.dataPath))
     ? fs.statSync(testerLogPath(entry.dataPath)).size
     : 0;
+  const started = Date.now();
 
   console.log(`    tester Model=${model} ${symbol} ${from} -> ${to}`);
-  const child = spawn(terminalExe, [`/config:${iniPath}`], { stdio: 'ignore' });
+  spawn(terminalExe, [`/config:${iniPath}`], { stdio: 'ignore', detached: true }).unref();
 
   const deadline = Date.now() + 20 * 60_000;
   while (Date.now() < deadline) {
@@ -173,24 +174,24 @@ async function runTesterSession(entry, symbol, { from, to, model, leverage }) {
     if (/Test passed|final balance/i.test(tail)) {
       return { ok: true, log: tail.slice(-500) };
     }
+    if (new RegExp(`${symbol}.*real ticks begin`, 'i').test(tail)) {
+      return { ok: true, log: tail.slice(-500) };
+    }
+    if (new RegExp(`${symbol}.*ticks data begins`, 'i').test(tail)) {
+      return { ok: true, log: tail.slice(-500) };
+    }
+    if (fs.existsSync(resultPath)) {
+      const st = fs.statSync(resultPath);
+      if (st.size > 20 && st.mtimeMs >= started - 5000) {
+        return { ok: true };
+      }
+    }
     if (/tester stopped/i.test(tail) && /not found|failed/i.test(tail)) {
       throw new Error(`Tester failed for ${symbol}: ${tail.slice(-300)}`);
-    }
-    if (child.exitCode != null) {
-      sleepMs(2000);
-      const finalTail = readTesterTail(entry.dataPath, logOffset);
-      if (/Test passed|final balance/i.test(finalTail)) return { ok: true };
-      if (fs.existsSync(resultPath)) return { ok: true };
-      throw new Error(`Tester exited early for ${symbol}`);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  try {
-    child.kill();
-  } catch {
-    /* ok */
-  }
   throw new Error(`Tester timed out for ${symbol} (${from} -> ${to})`);
 }
 
@@ -204,12 +205,21 @@ export async function forceCompleteLastMonth(entry, symbols, options = {}) {
   });
 
   console.log(`\nForce-complete last month (${tickSymbols.length} tick symbol(s))`);
+  const failures = [];
   for (const symbol of tickSymbols) {
     const dir = symbolTickDir(entry, symbol);
     const newest = readNewestTkc(dir);
     const { from, to } = monthRangeFromNewestTkc(newest);
     console.log(`  ${symbol}: ${newest} (${from} -> ${to})`);
-    await runTesterSession(entry, symbol, { from, to, model: 4, leverage });
+    try {
+      await runTesterSession(entry, symbol, { from, to, model: 4, leverage });
+    } catch (err) {
+      failures.push({ symbol, error: err.message });
+      console.log(`    warn     ${symbol}: ${err.message}`);
+    }
+  }
+  if (failures.length) {
+    console.log(`\n  Force-month warnings: ${failures.length} symbol(s) (sync will still run)`);
   }
 
   const histOnly = historyOnlySymbols.filter((s) => !tickSymbols.includes(s));
@@ -221,16 +231,22 @@ export async function forceCompleteLastMonth(entry, symbols, options = {}) {
       if (!newest) continue;
       const { from, to } = monthRangeFromNewestHistory(newest);
       console.log(`  ${symbol}: ${newest} (${from} -> ${to})`);
-      await runTesterSession(entry, symbol, { from, to, model: 1, leverage });
+      try {
+        await runTesterSession(entry, symbol, { from, to, model: 1, leverage });
+      } catch (err) {
+        failures.push({ symbol, error: err.message });
+        console.log(`    warn     ${symbol}: ${err.message}`);
+      }
     }
   }
+  return failures;
 }
 
 export async function forceCompleteForEntry(entry, options = {}) {
   const tickSymbols = entry.ticks.map((t) => t.symbol);
   const historySymbols = entry.history.map((h) => h.symbol);
   const historyOnly = historySymbols.filter((s) => !tickSymbols.includes(s));
-  await forceCompleteLastMonth(entry, tickSymbols, {
+  return forceCompleteLastMonth(entry, tickSymbols, {
     ...options,
     historyOnlySymbols: historyOnly,
   });
