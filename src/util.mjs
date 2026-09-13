@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export const MIN_HISTORY_HCC_BYTES = 1_000_000;
 export const TERMINAL_ROOT = path.join(process.env.APPDATA, 'MetaQuotes', 'Terminal');
 export const SKIP_TERMINAL_DIRS = new Set(['Common', 'Community']);
 
@@ -157,6 +158,22 @@ export function listFiles(dir) {
   } catch {
     return [];
   }
+}
+
+export function symbolHasTickData(dir) {
+  return listFiles(dir).some((f) => f.endsWith('.tkc'));
+}
+
+export function symbolHasHistoryData(dir) {
+  return symbolHasMeaningfulHistory(dir);
+}
+
+export function symbolHasMeaningfulHistory(dir) {
+  return listFiles(dir).some((f) => {
+    if (!/\.(hcc|hc)$/i.test(f)) return false;
+    const st = safeStat(path.join(dir, f));
+    return st && st.size >= MIN_HISTORY_HCC_BYTES;
+  });
 }
 
 export function newestDatedFile(files, parseFn) {

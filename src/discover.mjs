@@ -9,6 +9,8 @@ import {
   listFiles,
   readOriginInstallPath,
   safeStat,
+  symbolHasMeaningfulHistory,
+  symbolHasTickData,
 } from './util.mjs';
 
 function scanServerData(serverPath, kind) {
@@ -20,8 +22,8 @@ function scanServerData(serverPath, kind) {
     const files = listFiles(dir);
     const hasData =
       kind === 'ticks'
-        ? files.some((f) => f.endsWith('.tkc'))
-        : files.some((f) => /\.(hcc|hc)$/i.test(f));
+        ? symbolHasTickData(dir)
+        : symbolHasMeaningfulHistory(dir);
     if (!hasData) continue;
     let bytes = 0;
     for (const f of files) {

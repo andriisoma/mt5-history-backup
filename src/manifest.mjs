@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { formatBytes, listDirNames, listFiles, safeStat } from './util.mjs';
+import { formatBytes, listDirNames, listFiles, safeStat, symbolHasMeaningfulHistory, symbolHasTickData } from './util.mjs';
 
 function folderStats(dir) {
   let bytes = 0;
@@ -21,6 +21,9 @@ function scanTree(root, kind) {
   const out = [];
   for (const symbol of listDirNames(base)) {
     const dir = path.join(base, symbol);
+    const hasData =
+      kind === 'ticks' ? symbolHasTickData(dir) : symbolHasMeaningfulHistory(dir);
+    if (!hasData) continue;
     const stats = folderStats(dir);
     const dated = listFiles(dir).filter((f) =>
       kind === 'ticks' ? /^\d{6}\.tkc$/i.test(f) : /^\d{4}\.(hcc|hc)$/i.test(f),

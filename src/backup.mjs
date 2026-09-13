@@ -11,6 +11,8 @@ import {
   printDiscovery,
 } from './discover.mjs';
 import { forceCompleteForEntry } from './force-month.mjs';
+import { cleanupTickFolders } from './cleanup.mjs';
+import { forceM1HistoryForTickSymbols, removeHistoryWithoutTickMatch, trimAllHistoryFolders } from './history.mjs';
 import { writeManifest } from './manifest.mjs';
 import { summarizeSyncResults, syncHistoryTree, syncTicksTree } from './sync.mjs';
 import { formatBytes, loadJsonConfig } from './util.mjs';
@@ -40,6 +42,7 @@ Options:
   --all-brokers      Backup every discovered server
   --include-demo     Include *Demo* servers
   --skip-tester      Skip force-complete tester runs before copy
+  --no-cleanup       Do not remove ticks.dat-only folders from terminal or backup
   --leverage N       Tester leverage (default 500)
   --config PATH      JSON config file (default: config.json in repo root)
 
@@ -68,6 +71,7 @@ function parseArgs() {
     allBrokers: has('--all-brokers'),
     includeDemo: has('--include-demo') || fileCfg.includeDemo === true,
     skipTester: has('--skip-tester') || fileCfg.skipTester === true,
+    noCleanup: has('--no-cleanup') || fileCfg.noCleanup === true,
     dest: get('--dest') ?? fileCfg.dest ?? DEFAULT_DEST,
     server: get('--server') ?? fileCfg.server,
     terminalId: get('--terminal') ?? fileCfg.terminalId ?? '',
@@ -82,15 +86,37 @@ async function backupOneEntry(entry, options) {
 
   if (!options.skipTester) {
     await forceCompleteForEntry(entry, { leverage: options.leverage });
+    const tickSymbols = entry.ticks.map((t) => t.symbol);
+    const { startsBySymbol } = await forceM1HistoryForTickSymbols(entry, tickSymbols, {
+      leverage: options.leverage,
+    });
+    entry.m1Starts = startsBySymbol;
   } else {
     console.log('  skip-tester: copying existing terminal files only');
   }
 
   const src = getServerSourcePaths(entry);
   const dest = getServerDestPaths(options.dest, entry.server);
+  const tickSymbols = entry.ticks.map((t) => t.symbol);
+
+  if (!options.noCleanup) {
+    cleanupTickFolders(src.ticks, dest.ticks);
+    if (!options.skipTester) {
+      trimAllHistoryFolders(src.history, entry.m1Starts ?? {});
+    } else {
+      trimAllHistoryFolders(src.history, {});
+    }
+    removeHistoryWithoutTickMatch(src.history, tickSymbols);
+    removeHistoryWithoutTickMatch(dest.history, tickSymbols);
+  }
 
   const tickResults = await syncTicksTree(src.ticks, dest.ticks);
-  const historyResults = await syncHistoryTree(src.history, dest.history);
+  const historyResults = await syncHistoryTree(src.history, dest.history, tickSymbols);
+
+  if (!options.noCleanup) {
+    trimAllHistoryFolders(dest.history, entry.m1Starts ?? {});
+    removeHistoryWithoutTickMatch(dest.history, tickSymbols);
+  }
   const summary = summarizeSyncResults(tickResults, historyResults);
 
   console.log(
@@ -111,6 +137,7 @@ async function backupOneEntry(entry, options) {
     terminalId: entry.terminalId,
     dataPath: entry.dataPath,
     installPath: entry.installPath,
+    m1Starts: entry.m1Starts ?? {},
     summary,
     tickResults,
     historyResults,
@@ -178,7 +205,10 @@ async function main() {
     ranAt: new Date().toISOString(),
     skipTester: opts.skipTester,
     includeDemo: opts.includeDemo,
-    runs: runMeta,
+    runs: runMeta.map((r) => ({
+      ...r,
+      m1Starts: r.m1Starts ?? {},
+    })),
   });
 
   const copyErrors = runMeta.flatMap((r) => r.summary.errors ?? []);

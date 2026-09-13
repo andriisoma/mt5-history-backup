@@ -5,12 +5,18 @@ Portable CLI to back up MetaTrader 5 **real ticks** (`.tkc`) and **M1 bar histor
 ## What it does
 
 1. **Discover** broker data under `%APPDATA%\MetaQuotes\Terminal\<id>\bases\<Server>\`
-2. **Force-complete** the newest calendar month via Strategy Tester (`SymbolSpecProbe`, Model 4 for ticks, Model 1 for history-only symbols). This nudges MT5 to download/finish tick and bar data for that month.
-3. **Sync** to your backup folder with safe rules:
+2. **Force-complete** the newest calendar month via Strategy Tester (`SymbolSpecProbe`, Model 4 for ticks). This nudges MT5 to download/finish tick data for that month.
+3. **Download M1 history** for every tick symbol (Model 1 OHLC, `2000.01.01` to today). Parses the tester log line `SYMBOL,M1: history begins from YYYY.MM.DD` and trims stub/empty year files (keeps `.hcc` >= 1 MB; drops years before the logged M1 start).
+4. **Cleanup** symbol folders that only have `ticks.dat` (no `.tkc` tick history). These are removed from the terminal and backup; they are never synced.
+5. **Sync** to your backup folder with safe rules:
    - Add missing symbol folders and missing months/years
    - Replace **only the newest** dated file when the terminal copy is larger
    - Never overwrite older months/years
 4. Write **`manifest.json`** (R2-ready inventory)
+
+Symbols with only `ticks.dat` and no `.tkc` files are MT5 metadata stubs (symbol listed in Market Watch but no tick history downloaded). They are deleted during backup and never copied.
+
+History folders are only kept for tick symbols with meaningful M1 data (yearly `.hcc` files >= 1 MB). Empty stubs (e.g. XAUUSD 2012-2016 before real M1 from 2017) are removed using the tester log M1 start date.
 
 ## Quick start (this PC)
 
@@ -56,6 +62,7 @@ node src/backup.mjs --dest "C:\Users\andrs\My Drive\Forex\Ticks history backup" 
 | `--all-brokers` | Backup every discovered server |
 | `--include-demo` | Include `*Demo*` servers |
 | `--skip-tester` | Copy only, no tester pre-run |
+| `--no-cleanup` | Keep ticks.dat-only folders (default: remove them) |
 | `--leverage N` | Tester leverage (default 500) |
 
 ## Safety

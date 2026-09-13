@@ -9,6 +9,9 @@ import {
   parseYyyy,
   parseYyyyMm,
   safeStat,
+  symbolHasHistoryData,
+  symbolHasMeaningfulHistory,
+  symbolHasTickData,
 } from './util.mjs';
 
 const TICK_SIDECARS = new Set(['ticks.dat']);
@@ -136,10 +139,9 @@ export async function syncTicksTree(sourceTicksRoot, destTicksRoot) {
     return results;
   }
   fs.mkdirSync(destTicksRoot, { recursive: true });
-  const symbols = listDirNames(sourceTicksRoot).filter((symbol) => {
-    const files = listFiles(path.join(sourceTicksRoot, symbol));
-    return files.some((f) => f.endsWith('.tkc'));
-  });
+  const symbols = listDirNames(sourceTicksRoot).filter((symbol) =>
+    symbolHasTickData(path.join(sourceTicksRoot, symbol)),
+  );
   console.log(`\nSync ticks (${symbols.length} symbol(s))`);
   for (const symbol of symbols) {
     const res = await syncSymbolFolder({
@@ -155,16 +157,17 @@ export async function syncTicksTree(sourceTicksRoot, destTicksRoot) {
   return results;
 }
 
-export async function syncHistoryTree(sourceHistoryRoot, destHistoryRoot) {
+export async function syncHistoryTree(sourceHistoryRoot, destHistoryRoot, tickSymbols = null) {
   const results = [];
   if (!safeStat(sourceHistoryRoot)?.isDirectory()) {
     console.log(`Source history folder missing: ${sourceHistoryRoot}`);
     return results;
   }
   fs.mkdirSync(destHistoryRoot, { recursive: true });
+  const tickSet = tickSymbols == null ? null : new Set(tickSymbols);
   const symbols = listDirNames(sourceHistoryRoot).filter((symbol) => {
-    const files = listFiles(path.join(sourceHistoryRoot, symbol));
-    return files.some((f) => /\.(hcc|hc)$/i.test(f));
+    if (tickSet && !tickSet.has(symbol)) return false;
+    return symbolHasMeaningfulHistory(path.join(sourceHistoryRoot, symbol));
   });
   console.log(`\nSync history (${symbols.length} symbol(s))`);
   for (const symbol of symbols) {

@@ -4,13 +4,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   monthRangeForForceComplete,
-  monthRangeFromNewestHistory,
-  sleepMs,
 } from './util.mjs';
 import {
-  readNewestHistoryFile,
   readNewestTkc,
-  symbolHistoryDir,
   symbolTickDir,
 } from './discover.mjs';
 
@@ -86,34 +82,7 @@ ShutdownTerminal=1\r\n\
 ReplaceReport=0\r\n`;
 }
 
-function testerLogPath(dataPath) {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return path.join(dataPath, 'Tester', 'logs', `${y}${m}${d}.log`);
-}
-
-function readTesterTail(dataPath, _offset, maxBytes = 512 * 1024) {
-  const p = testerLogPath(dataPath);
-  if (!fs.existsSync(p)) return '';
-  const stat = fs.statSync(p);
-  const fd = fs.openSync(p, 'r');
-  try {
-    const bom = Buffer.alloc(2);
-    fs.readSync(fd, bom, 0, 2, 0);
-    const isUtf16 = bom[0] === 0xff && bom[1] === 0xfe;
-    let start = Math.max(isUtf16 ? 2 : 0, stat.size - maxBytes);
-    if (isUtf16 && (start - 2) % 2 !== 0) start += 1;
-    const readLen = stat.size - start;
-    const buf = Buffer.alloc(readLen);
-    fs.readSync(fd, buf, 0, readLen, start);
-    if (isUtf16) return new TextDecoder('utf-16le').decode(buf);
-    return new TextDecoder('utf-8').decode(buf);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
+import { readTesterLogSince, testerLogPath } from './tester-log.mjs';
 
 export function checkOccupancy(installPath, cliPath = DEFAULT_CLI) {
   if (!fs.existsSync(cliPath)) {
@@ -138,7 +107,7 @@ export function checkOccupancy(installPath, cliPath = DEFAULT_CLI) {
   return match ?? { cliBusy: false };
 }
 
-async function runTesterSession(entry, symbol, { from, to, model, leverage }) {
+export async function runTesterSession(entry, symbol, { from, to, model, leverage }) {
   writeProbeRequest([symbol]);
   ensureProbeEa(entry.installPath, entry.dataPath);
 
@@ -170,29 +139,29 @@ async function runTesterSession(entry, symbol, { from, to, model, leverage }) {
   console.log(`    tester Model=${model} ${symbol} ${from} -> ${to}`);
   spawn(terminalExe, [`/config:${iniPath}`], { stdio: 'ignore', detached: true }).unref();
 
-  const deadline = Date.now() + 20 * 60_000;
+  const deadline = Date.now() + (model === 1 ? 45 : 20) * 60_000;
   while (Date.now() < deadline) {
-    const tail = readTesterTail(entry.dataPath, logOffset);
-    if (/Test passed|final balance/i.test(tail)) {
-      return { ok: true, log: tail.slice(-500) };
+    const sessionLog = readTesterLogSince(entry.dataPath, logOffset);
+    if (/Test passed|final balance/i.test(sessionLog)) {
+      return { ok: true, logText: sessionLog };
     }
-    if (/SymbolSpecProbe: wrote/i.test(tail)) {
-      return { ok: true, log: tail.slice(-500) };
+    if (/SymbolSpecProbe: wrote/i.test(sessionLog)) {
+      return { ok: true, logText: sessionLog };
     }
-    if (new RegExp(`${symbol}.*real ticks begin`, 'i').test(tail)) {
-      return { ok: true, log: tail.slice(-500) };
+    if (new RegExp(`${symbol}.*real ticks begin`, 'i').test(sessionLog)) {
+      return { ok: true, logText: sessionLog };
     }
-    if (new RegExp(`${symbol}.*ticks data begins`, 'i').test(tail)) {
-      return { ok: true, log: tail.slice(-500) };
+    if (new RegExp(`${symbol}.*ticks data begins`, 'i').test(sessionLog)) {
+      return { ok: true, logText: sessionLog };
     }
     if (fs.existsSync(resultPath)) {
       const st = fs.statSync(resultPath);
       if (st.size > 20 && st.mtimeMs >= started - 5000) {
-        return { ok: true };
+        return { ok: true, logText: sessionLog };
       }
     }
-    if (/tester stopped/i.test(tail) && /not found|failed/i.test(tail)) {
-      throw new Error(`Tester failed for ${symbol}: ${tail.slice(-300)}`);
+    if (/tester stopped/i.test(sessionLog) && /not found|failed/i.test(sessionLog)) {
+      throw new Error(`Tester failed for ${symbol}: ${sessionLog.slice(-300)}`);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -201,7 +170,7 @@ async function runTesterSession(entry, symbol, { from, to, model, leverage }) {
 }
 
 export async function forceCompleteLastMonth(entry, symbols, options = {}) {
-  const { leverage = '500', historyOnlySymbols = [] } = options;
+  const { leverage = '500' } = options;
   checkOccupancy(entry.installPath, options.cliPath);
 
   const tickSymbols = symbols.filter((s) => {
@@ -226,33 +195,10 @@ export async function forceCompleteLastMonth(entry, symbols, options = {}) {
   if (failures.length) {
     console.log(`\n  Force-month warnings: ${failures.length} symbol(s) (sync will still run)`);
   }
-
-  const histOnly = historyOnlySymbols.filter((s) => !tickSymbols.includes(s));
-  if (histOnly.length) {
-    console.log(`\nForce-complete history-only (${histOnly.length} symbol(s), Model=1)`);
-    for (const symbol of histOnly) {
-      const dir = symbolHistoryDir(entry, symbol);
-      const newest = readNewestHistoryFile(dir);
-      if (!newest) continue;
-      const { from, to } = monthRangeFromNewestHistory(newest);
-      console.log(`  ${symbol}: ${newest} (${from} -> ${to})`);
-      try {
-        await runTesterSession(entry, symbol, { from, to, model: 1, leverage });
-      } catch (err) {
-        failures.push({ symbol, error: err.message });
-        console.log(`    warn     ${symbol}: ${err.message}`);
-      }
-    }
-  }
   return failures;
 }
 
 export async function forceCompleteForEntry(entry, options = {}) {
   const tickSymbols = entry.ticks.map((t) => t.symbol);
-  const historySymbols = entry.history.map((h) => h.symbol);
-  const historyOnly = historySymbols.filter((s) => !tickSymbols.includes(s));
-  return forceCompleteLastMonth(entry, tickSymbols, {
-    ...options,
-    historyOnlySymbols: historyOnly,
-  });
+  return forceCompleteLastMonth(entry, tickSymbols, options);
 }
